@@ -13,6 +13,21 @@ add_rolling_mean_sales <- function(dt, window = 14){
   
 }
 
+add_last_rolling_means <- function(train, test){
+  
+  last_rolling_avg_sales <- train %>%
+    group_by(item_nbr, store_nbr) %>%
+    slice_tail(n = 1) %>%
+    select(item_nbr, store_nbr, rolling_avg_sales)
+  
+  test <- test %>%
+    left_join(last_rolling_avg_sales, by = c("item_nbr", "store_nbr")) %>%
+    mutate(rolling_avg_sales = ifelse(is.na(rolling_avg_sales), 0, rolling_avg_sales))
+  
+  return(test)
+
+}
+
 
 
 add_day_of_week <- function(dt){

@@ -35,7 +35,7 @@ create_lgb_dataset <- function(dt, pred_features = c("onpromotion")){
 }
 
 
-tr <- fread("data/train_sample.csv", na.strings="",
+tr <- fread("data/train_2017.csv", na.strings="",
                col.names=c("id","date","store_nbr","item_nbr","unit_sales","onpromotion"))
 te <- fread("data/test.csv", na.strings="",
                col.names=c("id","date","store_nbr","item_nbr","onpromotion"))
@@ -56,6 +56,15 @@ train <- add_day_of_week(train)
 train <- add_isweekend(train)
 
 train <- add_rolling_mean_sales(train, window = 14)
+# only start using the data from when we have numbers coming in for rolling_mean_sales
+train <- train[train$rolling_avg_sales > 0, ]
+
+
+train <- train %>% arrange(desc(date))
+
+
+
+
 
 # TEST ##############################
 
@@ -66,10 +75,11 @@ test$month_number <- lubridate::month(test$date)
 test <- add_day_of_week(test)
 test <- add_isweekend(test)
 
+test <- add_last_rolling_means(train, test)
+test[is.na(rolling_avg_sales), rolling_avg_sales := 0]
 
 
-
-pred_features <- c("avg_unit_sales", "month_number", "day_of_week", "isweekend", "rolling_avg_sales")
+pred_features <- c("avg_unit_sales", "month_number", "day_of_week", "isweekend", "rolling_avg_sales", "onpromotion")
 dtrain <- create_lgb_dataset(data.table(train), pred_features)
 
 
