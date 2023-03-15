@@ -1,0 +1,32 @@
+**** GENERAL APPROACH **** 
+
+Use a versatile model, like LightGBM - mainly due to not being overly familiar with a more standard Time Series Forecast approach
+
+Create features that will best capture either:
+ * the likely value for "unit_sales" (using various, potentially "rolling" historic statistics)
+ * contextual information about why the historic statistics were what they were (e.g. long running promitions)
+ * an indidcation as to what may cause a spike or drop in "unit_sales" in the next period given the day/store/item/promotion etc.
+
+Thorough EDA to assist with the above
+
+Note distribution of the target variable has many low values close to 0, but then a few very large positive (and some negative) values
+
+
+**** EVALUATION AND ERROR METRICS *****
+
+Use of standard RMSE and utilise the Kaggle evaluation metric if possible (use their weighting if possible)
+
+Note their Metric penalises under-prediction higher than over (https://www.youtube.com/watch?v=WDwlXqvc-vA&ab_channel=YanAITalk)
+
+Look at predictions versus actuals to spot largest bias in model output
+
+
+
+
+**** FEATURE SELECTION & CROSS VALIDATION *****
+
+Given large feature set and limited time frames, keep this simple. Potentially lean on featureImportance from CV to guide selection
+
+CV approach to be determined. LGB tuning important, out of the box it seemed to be over-fitting. 
+May need to create validation slices that are like the 15-day out-sample slice
+
