@@ -1,6 +1,9 @@
 library(data.table)
 library(dplyr)
 
+source("util.R")
+source("feature_engineering.R")
+
 add_stores_and_holidays_features <- function(train){
 
   holidays <- fread("data/holidays_events.csv",  na.strings="",
@@ -45,6 +48,18 @@ add_item_features <- function(train){
 
 }
 
+process_data <- function(dt){
+  
+  dt <- dt %>% mutate(date = ymd(date))
+  # set onpromotion to integer
+  dt$onpromotion = as.integer(dt$onpromotion)
+  # when onpromotion is NA, just set it to 0
+  dt[is.na(onpromotion), onpromotion := 0]
+  
+  return(as.data.table(dt))
+  
+}
+
 
 
 
@@ -53,12 +68,17 @@ add_item_features <- function(train){
 train <- fread("data/train.csv", na.strings="",
                col.names=c("id","date","store_nbr","item_nbr","unit_sales","onpromotion"))
 
+train <- train[train$date > "2017-03-01",]
+train <- process_data(train)
+
+# this step will "sparsify" the data, filling in blanks where there were no sales for a given store/item
+train <- calc_rolling_mean_sales_item_store(train, 3)
+train[is.na(onpromotion), onpromotion := 0]
+
 train <- add_stores_and_holidays_features(train)
 train <- add_item_features(train)
 
-
-train_2017 <- train[train$date > "2017-03-01",]
-write.csv(train_2017, "data/train_2017_Mar.csv", row.names=F)
+write.csv(train, "data/train_2017_Mar.csv", row.names=F)
 
 
 

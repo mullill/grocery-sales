@@ -7,9 +7,18 @@ Create features that will best capture either:
  * contextual information about why the historic statistics were what they were (e.g. long running promitions)
  * an indidcation as to what may cause a spike or drop in "unit_sales" in the next period given the day/store/item/promotion etc.
 
+Confirm at what level to work at; store/item seems appropriate given each store has its own behaviour with respect to each item. 
+We may need to lean on more general historical statistical information if we don't have enough for a given store/item.. store/category?
+
 Thorough EDA to assist with the above
 
 Note distribution of the target variable has many low values close to 0, but then a few very large positive (and some negative) values
+
+*** JOURNEY ****
+
+Overfitting due to incorrectly generated group and rolling means (forward looking! and including today's value! oops)
+
+Stuck a bit on how to apply the rolling means "forward" in to the unseen Test sets
 
 
 **** EVALUATION AND ERROR METRICS *****
@@ -20,6 +29,13 @@ Note their Metric penalises under-prediction higher than over (https://www.youtu
 
 Look at predictions versus actuals to spot largest bias in model output
 
+
+**** FEATURE PROCESSING & ENGINEERING *****
+
+Get the data into the right shape for modelling: Fill the blanks! We have lots of days where there were 0 sales for a store/item.
+Assumedly, most (hopefully) are due to no sales being made, rather than the item not being available.
+
+Noting that there are differences in how the log1p effects impact of feature creation (multiplicative vs additive)
 
 
 

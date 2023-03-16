@@ -12,7 +12,7 @@ source("util.R")
 source("feature_engineering.R")
 
 process_data <- function(dt){
-
+  
   dt <- dt %>% mutate(date = ymd(date))
   # set onpromotion to integer
   dt$onpromotion = as.integer(dt$onpromotion)
@@ -26,124 +26,69 @@ process_data <- function(dt){
 create_lgb_dataset <- function(dt, pred_features = c("onpromotion")){
   
   features <- setdiff(pred_features, "unit_sales")
-  #print(head(as.matrix(dt[, features, with = FALSE])))
-  dt_ds <- lgb.Dataset(as.matrix(dt[, features, with = FALSE]), label = dt$unit_sales)
+  weights <- ifelse(dt$perishable == 1, 1.25, 1)
+  
+  dt_ds <- lgb.Dataset(as.matrix(dt[, features, with = FALSE]),
+                       weights = weights,
+                       label = dt$unit_sales)
   
   return(dt_ds)
+  
 }
 
-tr <- fread("data/train_2017_simple.csv", na.strings="")
+tr <- fread("data/train_2017_Mar.csv", na.strings="")
 te <- fread("data/test.csv", na.strings="")
 
 
 # TRAIN #########################################################################################
 
+
 train <- process_data(tr)
+print(paste0("Processed Train. ", min(train$date), " to ", max(train$date)))
+
 # log1p the unit_sales to deal with the distribution of the target;
 # lots of low values close to 0, but then a few very large positive (and some negative) values
 train$unit_sales <- log1p(ifelse(train$unit_sales>0,train$unit_sales,0))
 
-train <- add_day_of_week(train)
-train <- add_days_from_start_of_month_first14(train)
+# rolling 3 is there by default
+#train <- calc_rolling_mean_sales_item_store(train, 3)
+train <- calc_rolling_mean_sales_item_store(train, 7)
+train <- calc_rolling_mean_sales_item_store(train, 14)
 
-store_item_onpromotion_means <- get_mean_sales(train, c("item_nbr", "store_nbr", "onpromotion"), "mean_item_store_promo_unit_sales")
-train <- add_mean_sales(train, store_item_onpromotion_means, join_cols = c("item_nbr", "store_nbr", "onpromotion"), mean_col_name = "mean_item_store_promo_unit_sales")
-item_onpromotion_means <- get_mean_sales(train, c("item_nbr", "onpromotion"), "mean_item_promo_unit_sales")
-train <- add_mean_sales(train, item_onpromotion_means, join_cols = c("item_nbr", "onpromotion"), mean_col_name = "mean_item_promo_unit_sales")
-store_item_means <- get_mean_sales(train, c("item_nbr", "store_nbr"), "mean_item_store_unit_sales")
-train <- add_mean_sales(train, store_item_means, join_cols = c("item_nbr", "store_nbr"), mean_col_name = "mean_item_store_unit_sales")
-item_means <- get_mean_sales(train, c("item_nbr"), "mean_item_unit_sales")
-train <- add_mean_sales(train, item_means, join_cols = c("item_nbr"), mean_col_name = "mean_item_unit_sales")
 
-day_of_week_item_means <- get_mean_sales(train, c("item_nbr", "day_of_week"), "mean_item_dow_unit_sales")
-train <- add_mean_sales(train, day_of_week_item_means, c("item_nbr", "day_of_week"), "mean_item_dow_unit_sales")
-day_of_week_means <- get_mean_sales(train, c("day_of_week"), "mean_dow_unit_sales")
-train <- add_mean_sales(train, day_of_week_means, c("day_of_week"), "mean_dow_unit_sales")
-
-days_from_start_of_month_means <- get_mean_sales(train, c("days_from_start_of_month"), "mean_days_from_start_of_month_unit_sales")
-train <- add_mean_sales(train, days_from_start_of_month_means, c("days_from_start_of_month"), "mean_days_from_start_of_month_unit_sales")
-
-days_from_start_of_month_item_means <- get_mean_sales(train, c("item_nbr", "days_from_start_of_month"), "mean_days_from_start_of_month_item_unit_sales")
-train <- add_mean_sales(train, days_from_start_of_month_item_means, c("item_nbr", "days_from_start_of_month"), "mean_days_from_start_of_month_item_unit_sales")
-
-days_from_start_of_month_store_means <- get_mean_sales(train, c("store_nbr", "days_from_start_of_month"), "mean_days_from_start_of_month_store_unit_sales")
-train <- add_mean_sales(train, days_from_start_of_month_store_means, c("store_nbr", "days_from_start_of_month"), "mean_days_from_start_of_month_store_unit_sales")
-
-promo_means <- get_mean_sales(train, c("onpromotion"), "mean_promo_unit_sales")
-train <- add_mean_sales(train, promo_means, c("onpromotion"), "mean_promo_unit_sales")
+train <- calc_rolling_sum_promo_item_store(train, 7)
 
 
 
-train <- add_is_weekend(train)
-#train <- add_is_weekend_workday(train)
-train <- add_rolling_mean_sales(train, window = 3)
-train <- add_rolling_mean_sales(train, window = 7)
-train <- add_rolling_mean_sales(train, window = 14)
-train <- add_rolling_mean_sales(train, window = 30)
 
-train[rolling_avg_sales_3 == 0, rolling_avg_sales_3 := mean_item_store_promo_unit_sales]
-train[rolling_avg_sales_3 == 0, rolling_avg_sales_3 := mean_item_promo_unit_sales]
-train[rolling_avg_sales_3 == 0, rolling_avg_sales_3 := mean_item_unit_sales ]
-train[rolling_avg_sales_7 == 0, rolling_avg_sales_7 := rolling_avg_sales_3]
-train[rolling_avg_sales_14 == 0, rolling_avg_sales_14 := rolling_avg_sales_7]
-train[rolling_avg_sales_30 == 0, rolling_avg_sales_30 := rolling_avg_sales_14]
+# do we need to get fancy with imputation?
+# should we just cull the first 14 days?
 
-
-#train <- add_is_national_holiday(train)
-#train <- add_days_to_xmas_last30(train)
-#train <- add_days_from_start_of_month_first14(train)
 
 # TEST ########################################################################################
 
 test_ids <- te$id
 test <- process_data(te)
+print(paste0("Processed Test. ", min(test$date), " to ", max(test$date)))
 test <- add_day_of_week(test)
 test <- add_days_from_start_of_month_first14(test)
 
-test <- add_mean_sales(test, store_item_onpromotion_means, join_cols = c("item_nbr", "store_nbr", "onpromotion"), mean_col_name = "mean_item_store_promo_unit_sales")
-test <- add_mean_sales(test, item_onpromotion_means, join_cols = c("item_nbr", "onpromotion"), mean_col_name = "mean_item_promo_unit_sales")
-test <- add_mean_sales(test, store_item_means, join_cols = c("item_nbr", "store_nbr"), mean_col_name = "mean_item_store_unit_sales")
-test <- add_mean_sales(test, item_means, join_cols = c("item_nbr"), mean_col_name = "mean_item_unit_sales")
-# impute if missing
-test[mean_item_store_promo_unit_sales == 0, mean_item_store_promo_unit_sales := mean_item_promo_unit_sales]
-test[mean_item_store_promo_unit_sales == 0, mean_item_store_promo_unit_sales := mean_item_unit_sales]
-
-
-
-test <- add_mean_sales(test, day_of_week_item_means, c("item_nbr", "day_of_week"), "mean_item_dow_unit_sales")
-test <- add_mean_sales(test, day_of_week_means, c("day_of_week"), "mean_dow_unit_sales")
-test <- add_mean_sales(test, days_from_start_of_month_means, c("days_from_start_of_month"), "mean_days_from_start_of_month_unit_sales")
-test <- add_mean_sales(test, days_from_start_of_month_item_means, c("item_nbr", "days_from_start_of_month"), "mean_days_from_start_of_month_item_unit_sales")
-test <- add_mean_sales(test, days_from_start_of_month_store_means, c("store_nbr", "days_from_start_of_month"), "mean_days_from_start_of_month_store_unit_sales")
-
-test <- add_mean_sales(test, promo_means, c("onpromotion"), "mean_promo_unit_sales")
-
-#test <- add_is_weekend_workday(test)
 test <- add_last_rolling_means(train, test, window = 3)
-test[rolling_avg_sales_3 == 0, rolling_avg_sales_3 := mean_item_store_promo_unit_sales]
-test[rolling_avg_sales_3 == 0, rolling_avg_sales_3 := mean_item_promo_unit_sales]
-test[rolling_avg_sales_3 == 0, rolling_avg_sales_3 := mean_item_unit_sales ]
-
 test <- add_last_rolling_means(train, test, window = 7)
-test[rolling_avg_sales_7 == 0, rolling_avg_sales_7 := rolling_avg_sales_3]
 test <- add_last_rolling_means(train, test, window = 14)
-test[rolling_avg_sales_14 == 0, rolling_avg_sales_14 := rolling_avg_sales_7]
-test <- add_last_rolling_means(train, test, window = 30)
-test[rolling_avg_sales_30 == 0, rolling_avg_sales_30 := rolling_avg_sales_14]
+
+test <- add_last_rolling_sums(train, test, 7)
 
 
+# imputation strategies????
 
-#test <- add_last_rolling_means(train, test, window = 30)
-#test <- add_is_national_holiday(test)
-#test <- add_days_to_xmas_last30(test)
-#test <- add_days_from_start_of_month_first14(test)
 
 # they might be 0, we probably want to then override that with the simple average
 
 pred_features <- c('onpromotion','rolling_avg_sales_14','day_of_week','days_from_start_of_month','mean_item_store_promo_unit_sales','mean_item_promo_unit_sales','mean_item_store_unit_sales','mean_item_unit_sales','mean_item_dow_unit_sales','mean_dow_unit_sales','mean_days_from_start_of_month_unit_sales', 
                    'mean_days_from_start_of_month_item_unit_sales','mean_days_from_start_of_month_store_unit_sales','mean_promo_unit_sales')
 
-pred_featues <- c("rolling_avg_sales_14", "rolling_avg_sales_3", "rolling_avg_sales_7", "rolling_avg_sales_30")
+pred_features <- c("rolling_avg_sales_3", "rolling_avg_sales_7", "rolling_avg_sales_14", "rolling_sum_promo_7", "onpromotion", "")
 
                   
 dtrain <- create_lgb_dataset(data.table(train), pred_features)
@@ -191,14 +136,12 @@ final_model <- lgb.train(dtrain, params = params, nrounds = cv_results$best_iter
 
 # features used
 feature_imp <- lgb.importance(final_model, percentage = TRUE)
-features_used <- feature_imp$Feature
 feature_imp
 
-train_preds <- as.data.table(cbind(unit_sales = train$unit_sales, unit_sales_pred=predict(final_model, as.matrix(train[, ..pred_features]))))
-get_error_metrics(train_preds$unit_sales, train_preds$unit_sales_pred)
-
-
-
+train_preds <- as.data.table(cbind(unit_sales = train$unit_sales, 
+                                   unit_sales_pred=predict(final_model, as.matrix(train[, ..pred_features])),
+                                   weights = ((train$perishable * .25) + 1)))
+get_error_metrics(train_preds$unit_sales, train_preds$unit_sales_pred, train_preds$weights)
 
 
 
