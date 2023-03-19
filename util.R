@@ -10,31 +10,52 @@ get_error_metrics <- function(actual, predicted, weights){
   
   mean_actual <- mean(actual)
   mean_pred <- mean(predicted)
-  print(paste0("sanity check:::: Mean Actual: ", round(mean_actual, 2), " - mean_pred: ", round(mean_pred, 2)))
   
   rmse = Metrics::rmse(actual, predicted)
   nrmse = nrmse(actual, predicted, weights)
   mae = Metrics::mae(actual, predicted)
-  smape = Metrics::smape(actual, predicted)
+  #smape = Metrics::smape(actual, predicted)
   #mape = Metrics::mape(actual, predicted)
   
   # quantiles <- c(0.05, 0.10, 0.50, 0.90, 0.95)
   # ql <- quantileLoss(actual, predicted, quantiles)
   
-  return(data.frame(rmse, nrmse, mae, smape))
+  return(data.frame(rmse, nrmse, mae))
   
 }
 
-create_lgb_dataset <- function(dt, pred_features = c("onpromotion")){
-  
-  features <- setdiff(pred_features, "unit_sales")
-  weights <- ifelse(dt$perishable == 1, 1.25, 1)
-  
-  dt_ds <- lgb.Dataset(as.matrix(dt[, features, with = FALSE]),
-                       weights = weights,
-                       label = dt$unit_sales)
+create_lgb_dataset <- function(dt, pred_features = c("onpromotion"), categorical_feature = c("onpromotion")){
+
+  dt_ds <- lgb.Dataset(as.matrix(dt[, pred_features, with = FALSE]),
+                       label = dt$unit_sales, 
+                       categorical_feature = categorical_feature,
+                       weight = dt$weights)
   
   return(dt_ds)
+  
+}
+
+# given a Training set, we need to apply the features we have created
+# "forward" into the Test set
+apply_train_features_forward <- function(tr_cv, te_cv){
+  
+  print("Add Rolling Mean Sales: 1")
+  te_cv <- add_last_rolling_means(tr_cv, te_cv, window = 1)
+  print("Add Rolling Mean Sales: 3")
+  te_cv <- add_last_rolling_means(tr_cv, te_cv, window = 3)
+  print("Add Rolling Mean Sales: 7")
+  te_cv <- add_last_rolling_means(tr_cv, te_cv, window = 7)
+  print("Add Rolling Mean Sales: 14")
+  te_cv <- add_last_rolling_means(tr_cv, te_cv, window = 14)
+  
+  print("Add Rolling Mean Class/Store Sales: 7")
+  te_cv <- add_last_rolling_class_store_means(tr_cv, te_cv, window = 7)
+  
+  
+  print("Add Rolling Sum Promos: 7")
+  te_cv <- add_last_rolling_sums(tr_cv, te_cv, 7)
+  
+  return(te_cv)
   
 }
 
@@ -44,7 +65,7 @@ create_lgb_dataset <- function(dt, pred_features = c("onpromotion")){
 # we loop over our hyper param grid in each split, performing inner cv on the tr_cv, and then
 # fitting the final model for te_cv
 # we capture all relevant metrics for that final train/test
-do_cv <- function(train, num_windows = 3, window_length = 15, pred_features = c("rolling_avg_sales_3")){
+do_cv <- function(train, num_windows = 3, window_length = 15, pred_features = c("rolling_avg_sales_3", "onpromotion")){
                                                                                 #"rolling_avg_sales_7", 
                                                                                 #"rolling_avg_sales_14", 
                                                                                 #"rolling_sum_promo_7",
@@ -52,19 +73,18 @@ do_cv <- function(train, num_windows = 3, window_length = 15, pred_features = c(
   
   #grid search
   #create hyperparameter grid
-  num_leaves = 30
-  max_depth = 5
-  num_iterations = seq(10, 20, 10)
+  num_leaves = c(40, 50)
+  max_depth = c(20)
+  num_iterations = c(40, 50)
   early_stopping_rounds = 10#round(num_iterations * .1,0)
-  learning_rate = c(0.01, 0.1)
+  learning_rate = c(0.2, 0.5)
   hyper_grid <- expand.grid(max_depth = max_depth,
                             num_leaves = num_leaves,
                             num_iterations = num_iterations,
                             early_stopping_rounds=early_stopping_rounds,
                             learning_rate = learning_rate)
   
-  
-  cv_scores <- NULL
+  cv_error_metrics <- NULL
   cv_feature_importances <- NULL
   
   for(i in 1:num_windows){
@@ -79,23 +99,21 @@ do_cv <- function(train, num_windows = 3, window_length = 15, pred_features = c(
     tr_cv <- train[train$date >= start_date & train$date <= end_date]
     print(paste0("tr_cv: ", min(tr_cv$date), " to ", max(tr_cv$date), ". num rows: ", nrow(tr_cv)))
     
-    te_cv <- train[train$date > max(tr_cv$date) & train$date <= (max(tr_cv$date) + days(window_length))]
+    te_cv <- train[train$id != "NA" & train$date > max(tr_cv$date) & train$date <= (max(tr_cv$date) + days(window_length))]
     print(paste0("te_cv: ", min(te_cv$date), " to ", max(te_cv$date), ". num rows: ", nrow(te_cv)))
     
     # prepare te_cv as if it was out-sample ahead
     print("processing te_cv")
-    te_cv <- add_last_rolling_means(tr_cv, te_cv, window = 3)
-    # te_cv <- add_last_rolling_means(tr_cv, te_cv, window = 7)
-    # te_cv <- add_last_rolling_means(tr_cv, te_cv, window = 14)
-    # te_cv <- add_last_rolling_sums(tr_cv, te_cv, 7)
+    # given our training set, create the test set features
+    te_cv <- apply_train_features_forward(tr_cv, te_cv)
     
-    
+    train_lgb <- create_lgb_dataset(tr_cv, pred_features)
+    test_lgb <- create_lgb_dataset(te_cv, pred_features)
+   
     for(j in 1:nrow(hyper_grid)) {
       print(paste0("Hyper Param Combo: ", j))
       print(hyper_grid[j,])
     
-      train_lgb <- create_lgb_dataset(tr_cv, pred_features)
-      
       light_gbn_tuned <- lgb.train(
         params = list(
           objective = "regression", 
@@ -103,41 +121,52 @@ do_cv <- function(train, num_windows = 3, window_length = 15, pred_features = c(
           max_depth = hyper_grid$max_depth[j],
           num_leaves = hyper_grid$num_leaves[j],
           num_iterations = hyper_grid$num_iterations[j],
-          early_stopping = hyper_grid$early_stopping_rounds[j],
           learning_rate = hyper_grid$learning_rate[j], 
-          verbose = 1
+          verbose = 1,
+          weight_column = "weights"
         ), 
-        nfold = 7L,
+        early_stopping_rounds = hyper_grid$early_stopping_rounds[j],
+        valids = list(test = test_lgb),
         data = train_lgb
       )
       
-      print(lgb.train)
-
       # features used
-      feature_imp <- lgb.importance(final_model, percentage = TRUE)
-      feature_imp$cv_split <- i
+      feature_imp <- cbind(cv_split = i, hp_combo = j, lgb.importance(light_gbn_tuned, percentage = TRUE))
+      print(feature_imp)
       feature_imp <- cbind(feature_imp, hyper_grid[j,])
-      
       cv_feature_importances <- rbind(cv_feature_importances, feature_imp)
       
       train_preds <- as.data.table(cbind(unit_sales = tr_cv$unit_sales, 
                                          unit_sales_pred=predict(light_gbn_tuned, as.matrix(tr_cv[, ..pred_features])),
-                                         weights = ((tr_cv$perishable * .25) + 1)))
-      get_error_metrics(train_preds$unit_sales, train_preds$unit_sales_pred, train_preds$weights)
+                                         weights = tr_cv$weights))
+      tr_cv_error_metrics <- get_error_metrics(expm1(train_preds$unit_sales), expm1(train_preds$unit_sales_pred), train_preds$weights)
+      tr_cv_error_metrics <- tr_cv_error_metrics %>% rename_with(~paste0("tr_", .), everything())
+      print(tr_cv_error_metrics)
       
       test_preds <- as.data.table(cbind(unit_sales = te_cv$unit_sales, 
                                          unit_sales_pred=predict(light_gbn_tuned, as.matrix(te_cv[, ..pred_features])),
-                                         weights = ((te_cv$perishable * .25) + 1)))
-      get_error_metrics(test_preds$unit_sales, test_preds$unit_sales_pred, test_preds$weights)
+                                         weights = te_cv$weights))
+      te_cv_error_metrics <- get_error_metrics(expm1(test_preds$unit_sales), expm1(test_preds$unit_sales_pred), test_preds$weights)
+      te_cv_error_metrics <- te_cv_error_metrics %>% rename_with(~paste0("te_", .), everything())
+      print(te_cv_error_metrics)
       
+      cv_error_metrics <- rbind(cv_error_metrics, cbind(cv_split = i, hp_combo = j, hyper_grid[j,], tr_cv_error_metrics, te_cv_error_metrics))
       
-    
-    
     }
     
   }
+  
+  return(list(cv_error_metrics=cv_error_metrics, cv_feature_importances=cv_feature_importances))
   
 }
 
 
 
+get_predictions <- function(dt, model){
+  
+  preds <- predict(model, as.matrix(dt[dt$id != "NA", ..pred_features]))
+  preds_table <- as.data.table(cbind(dt[dt$id != "NA", c("id","unit_sales","weights")], unit_sales_pred = preds))
+  preds_table[unit_sales_pred < 0, unit_sales_pred := 0]
+  return(preds_table)
+  
+}

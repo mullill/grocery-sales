@@ -1,5 +1,6 @@
 library(data.table)
 library(dplyr)
+library(ggplot2)
 
 source("util.R")
 source("feature_engineering.R")
@@ -64,7 +65,6 @@ process_data <- function(dt){
 
 
 ################## TRAIN ###########################################################################
-
 train <- fread("data/train.csv", na.strings="",
                col.names=c("id","date","store_nbr","item_nbr","unit_sales","onpromotion"))
 
@@ -72,8 +72,16 @@ train <- train[train$date > "2017-03-01",]
 train <- process_data(train)
 
 # this step will "sparsify" the data, filling in blanks where there were no sales for a given store/item
-train <- calc_rolling_mean_sales_item_store(train, 3)
-train[is.na(onpromotion), onpromotion := 0]
+train <- calc_rolling_mean_sales_item_store(train, 1)
+
+nrow(train[is.na(train$id),]) / nrow(train)
+cor(train$rolling_avg_sales_1, train$unit_sales)
+
+train[is.na(unit_sales), unit_sales:= 0]
+train[is.na(onpromotion), onpromotion:= 0]
+
+cor(train$rolling_avg_sales_1, train$unit_sales)
+
 
 train <- add_stores_and_holidays_features(train)
 train <- add_item_features(train)
@@ -99,4 +107,38 @@ test <- add_stores_and_holidays_features(test)
 test <- add_item_features(test)
 
 write.csv(test, "data/test_joined.csv", row.names=F)
+
+
+
+
+
+
+
+
+
+
+#### FULL TRAIN EDA ###############################################################################
+
+hist(train$unit_sales)
+hist(train[train$unit_sales > -100 & train$unit_sales < 500,]$unit_sales)
+
+hist(log1p(train$unit_sales))
+
+ggplot(train, aes(x = unit_sales)) +
+  geom_density() +
+  scale_x_continuous(limits = c(0, 5000))
+
+
+
+ggplot(train, aes(x = unit_sales)) +
+  geom_histogram(binwidth = 100) +
+  scale_x_continuous(limits = c(0, 5000))
+  scale_x_continuous(limits = c(0, 5000))
+
+
+
+
+
+
+
 

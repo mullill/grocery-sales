@@ -7,6 +7,7 @@ library(data.table)
 library(dplyr)
 library(Metrics)
 library(zoo)
+library(zip)
 
 source("util.R")
 source("feature_engineering.R")
@@ -23,21 +24,8 @@ process_data <- function(dt){
   
 }
 
-create_lgb_dataset <- function(dt, pred_features = c("onpromotion")){
-  
-  features <- setdiff(pred_features, "unit_sales")
-  weights <- ifelse(dt$perishable == 1, 1.25, 1)
-  
-  dt_ds <- lgb.Dataset(as.matrix(dt[, features, with = FALSE]),
-                       weights = weights,
-                       label = dt$unit_sales)
-  
-  return(dt_ds)
-  
-}
-
 tr <- fread("data/train_2017_Mar.csv", na.strings="")
-te <- fread("data/test.csv", na.strings="")
+te <- fread("data/test_joined.csv", na.strings="")
 
 
 # TRAIN #########################################################################################
@@ -50,13 +38,26 @@ print(paste0("Processed Train. ", min(train$date), " to ", max(train$date)))
 # lots of low values close to 0, but then a few very large positive (and some negative) values
 train$unit_sales <- log1p(ifelse(train$unit_sales>0,train$unit_sales,0))
 
+
+train$weights <- ifelse(train$perishable == 1, 1.25, 1)
+
+train <- add_day_of_week(train)
+train <- add_days_from_start_of_month_first14(train)
+train <- add_days_from_15th(train)
+
+
 # rolling 3 is there by default
-#train <- calc_rolling_mean_sales_item_store(train, 3)
+#train <- calc_rolling_mean_sales_item_store(train, 1)
+train <- calc_rolling_mean_sales_item_store(train, 3)
 train <- calc_rolling_mean_sales_item_store(train, 7)
 train <- calc_rolling_mean_sales_item_store(train, 14)
 
+train <- calc_rolling_mean_sales_class_store(train, 7)
+train <- train[!is.na(train$id),]
+
 
 train <- calc_rolling_sum_promo_item_store(train, 7)
+
 
 
 
@@ -72,12 +73,8 @@ test <- process_data(te)
 print(paste0("Processed Test. ", min(test$date), " to ", max(test$date)))
 test <- add_day_of_week(test)
 test <- add_days_from_start_of_month_first14(test)
-
-test <- add_last_rolling_means(train, test, window = 3)
-test <- add_last_rolling_means(train, test, window = 7)
-test <- add_last_rolling_means(train, test, window = 14)
-
-test <- add_last_rolling_sums(train, test, 7)
+test <- add_days_from_15th(test)
+test <- apply_train_features_forward(train, test)
 
 
 # imputation strategies????
@@ -85,75 +82,74 @@ test <- add_last_rolling_sums(train, test, 7)
 
 # they might be 0, we probably want to then override that with the simple average
 
-pred_features <- c('onpromotion','rolling_avg_sales_14','day_of_week','days_from_start_of_month','mean_item_store_promo_unit_sales','mean_item_promo_unit_sales','mean_item_store_unit_sales','mean_item_unit_sales','mean_item_dow_unit_sales','mean_dow_unit_sales','mean_days_from_start_of_month_unit_sales', 
-                   'mean_days_from_start_of_month_item_unit_sales','mean_days_from_start_of_month_store_unit_sales','mean_promo_unit_sales')
-
-pred_features <- c("rolling_avg_sales_3", "rolling_avg_sales_7", "rolling_avg_sales_14", "rolling_sum_promo_7", "onpromotion", "")
-
-                  
-dtrain <- create_lgb_dataset(data.table(train), pred_features)
+pred_features <- c("rolling_avg_sales_1", "rolling_avg_sales_3", "rolling_avg_sales_7", "rolling_avg_sales_14", "rolling_sum_promo_7",
+                   "onpromotion", "is_dayoff", "days_from_start_of_month", "class", "days_from_15th", "rolling_avg_class_store_sales_7")
 
 
-param_grid <- expand.grid(learning_rate = c(0.1, 0.01))
+# do cv, get best hyper params
+cv_results <- do_cv(train, num_windows = 3, window_length = 15, pred_features = pred_features)
+feature_importance <- cv_results$cv_feature_importances
+write.csv(feature_importance, "analysis/cv_feature_importance.csv", row.names=F)
+cv_error_metrics <- cv_results$cv_error_metrics
+write.csv(cv_error_metrics, "analysis/cv_error_metrics.csv", row.names=F)
 
-num_leaves = 2^5-2
-max_depth = round(log(num_leaves) / log(2),0)
+mean_over_cv_splits <- cv_error_metrics %>% 
+  group_by(hp_combo) %>%
+  summarise(
+    mean_tr_rmse = mean(tr_rmse), 
+    mean_tr_nrmse = mean(tr_nrmse), 
+    mean_tr_mae = mean(tr_mae), 
+    mean_te_rmse = mean(te_rmse), 
+    mean_te_nrmse = mean(te_nrmse), 
+    mean_te_mae = mean(te_mae)
+  ) %>%
+  ungroup()
 
-params <- list(
-  objective = "regression",
-  num_leaves = num_leaves,
-  metric = "rmse",
-  boost_from_average = FALSE,
-  learning_rate = 0.1,
-  max_depth = max_depth,
-  # min_split_gain = 0.0,
-  # min_child_weight = 0.001,
-  # min_child_samples = 20,
-  # subsample = 1.0,
-  # subsample_freq = 0,
-  # colsample_bytree = 1.0,
-  # reg_alpha = 0.0,
-  # reg_lambda = 0.0,
-  # nthread = -1,
-  # verbose = -1,
-  seed = 42
-  #hyper_params = param_grid
+best_hp_combo <- mean_over_cv_splits[mean_over_cv_splits$mean_te_nrmse == min(mean_over_cv_splits$mean_te_nrmse),]$hp_combo
+best_hyper <- cv_error_metrics[cv_error_metrics$hp_combo == best_hp_combo,][1,]
+
+# leave the last 15 days for our validation set for this final train
+train_lgb <- create_lgb_dataset(train, pred_features, categorical_feature = c("class"))
+
+val_dt <- train[train$date >= (max(train$date) - lubridate::days(15)) & train$id != "NA",]
+
+val_dt <- apply_train_features_forward(train[train$date < (max(train$date) - lubridate::days(15)),], val_dt)
+
+valid_lgb <- create_lgb_dataset(val_dt, pred_features, categorical_feature = c("class"))
+
+light_gbn_tuned <- lgb.train(
+  params = list(
+    objective = "regression", 
+    metric = "rmse",
+    max_depth = best_hyper$max_depth,
+    num_leaves = best_hyper$num_leaves,
+    num_iterations = best_hyper$num_iterations,
+    learning_rate = best_hyper$learning_rate,
+    verbose = 1,
+    weight_column = "weights"
+  ), 
+  early_stopping_rounds = best_hyper$early_stopping_rounds,
+  valids = list(test = valid_lgb),
+  data = train_lgb
 )
 
-cv_results <- lgb.cv(
-  params = params
-  , data = dtrain
-  , nrounds = 10L
-  , nfold = 7L
-  , early_stopping_rounds = 10
-)
+feature_imp <- lgb.importance(light_gbn_tuned, percentage = TRUE)
+print(feature_imp)
 
-#best_hyperparams <- param_grid[cv_results$best_iter, ]
+train_preds <- get_predictions(train, light_gbn_tuned)
+tr_error_metrics <- get_error_metrics(expm1(train_preds$unit_sales), expm1(train_preds$unit_sales_pred), train_preds$weights)
+tr_error_metrics
 
-
-
-final_model <- lgb.train(dtrain, params = params, nrounds = cv_results$best_iter)
-
-# features used
-feature_imp <- lgb.importance(final_model, percentage = TRUE)
-feature_imp
-
-train_preds <- as.data.table(cbind(unit_sales = train$unit_sales, 
-                                   unit_sales_pred=predict(final_model, as.matrix(train[, ..pred_features])),
-                                   weights = ((train$perishable * .25) + 1)))
-get_error_metrics(train_preds$unit_sales, train_preds$unit_sales_pred, train_preds$weights)
+val_preds <- get_predictions(val_dt, light_gbn_tuned)
+val_error_metrics <- get_error_metrics(expm1(val_preds$unit_sales), expm1(val_preds$unit_sales_pred), val_preds$weights)
+val_error_metrics
 
 
-
-
-
-
-
-
-test_preds <- data.table(id=test_ids, unit_sales=predict(final_model, as.matrix(test[, ..pred_features])))
+test_preds <- data.table(id=test_ids, unit_sales=predict(light_gbn_tuned, as.matrix(test[, ..pred_features])))
 # undo the log1p
 test_preds$unit_sales <- expm1(test_preds$unit_sales)
-
+test_preds[unit_sales < 0, unit_sales := 0]
 
 
 write.csv(test_preds, "submission/submission.csv", row.names = F)
+zipr(zipfile = "submission/submission.zip", files = "submission/submission.csv")
