@@ -170,13 +170,20 @@ add_mean_sales <- function(dt, means, join_cols, mean_col_name){
   return(dt)
 }
 
-get_promotion_percentage_diff <- function(dt) {
-  result <- dt %>%
-    group_by(item_nbr, onpromotion) %>%
+add_store_promotion_perc_diff <- function(dt) {
+  
+  store_promotion_perc_diff <- dt %>%
+    group_by(store_nbr, onpromotion) %>%
     summarize(mean_unit_sales = mean(unit_sales)) %>%
     pivot_wider(names_from = onpromotion, values_from = mean_unit_sales) %>%
-    mutate(promotion_percentage_diff = (1 - `0`/`1`) * 100)
-  return(result)
+    mutate(store_promotion_perc_diff = (1 - `0`/`1`) * 100)
+  
+  
+  
+  dt <- dt %>% left_join(store_promotion_perc_diff[, c("store_nbr", "store_promotion_perc_diff")])
+  
+  return(dt)
+  
 }
 
 
@@ -207,6 +214,27 @@ add_days_from_start_of_month_first14 <- function(dt){
   
   dt$days_from_start_of_month <- day(dt$date) - 1
   dt$days_from_start_of_month <- ifelse(dt$days_from_start_of_month > 14, 14, dt$days_from_start_of_month)
+  return(dt)
+}
+
+add_is_start_of_month <- function(dt){
+  dt$is_start_of_month <- ifelse(dt$day_of_month < 3, 1, 0)
+  return(dt)
+}
+
+add_is_soon_after_payday <- function(dt){
+  dt$is_soon_after_payday <- ifelse(dt$day_of_month %in% c(1, 2, 3, 4, 16, 17), 1, 0)
+  return(dt)
+}
+
+add_is_soon_after_public_payday <- function(dt){
+  dt$is_soon_after_public_payday <- ifelse(dt$day_of_month %in% c(16, 17), 1, 0)
+  return(dt)
+}
+
+
+add_day_of_month <- function(dt){
+  dt$day_of_month <- lubridate::day(dt$date)
   return(dt)
 }
 
@@ -246,69 +274,48 @@ create_rolling_means <- function(data, group_cols, window_sizes, mean_col_name) 
 }
 
 
-# only adding from first observed sale onwards
-calc_rolling_mean_sales_item_store <- function(df, window, mean_col_name="rolling_avg_sales") {
-  # Create a data frame with all combinations of date, item_nbr, and store_nbr
-  date_range <- seq(min(df$date), max(df$date), by = "day")
-  item_store_comb <- df %>% 
-    select(item_nbr, store_nbr) %>% 
-    distinct() %>% 
-    expand(date = date_range, item_nbr, store_nbr) %>% 
-    arrange(item_nbr, store_nbr, date)
-  
-  # Find the first date with non-zero sales for each item-store combination
-  first_sales_date <- df %>%
-    group_by(item_nbr, store_nbr) %>%
-    summarize(first_sales_date = min(date[which(unit_sales > 0)])) %>%
-    ungroup()
-  
-  # Join the data frames to fill in missing values and calculate rolling mean
-  df_with_rolling_mean <- item_store_comb %>% 
-    left_join(df, by = c("date", "item_nbr", "store_nbr")) %>% 
-    arrange(item_nbr, store_nbr, date) %>% 
-    left_join(first_sales_date, by = c("item_nbr", "store_nbr")) %>%
-    filter(date >= first_sales_date$first_sales_date) %>%
-    mutate(prev_sales = lag(unit_sales, default = 0)) %>%
-    group_by(item_nbr, store_nbr) %>%
-    mutate(prev_sales = ifelse(is.na(prev_sales), 0, prev_sales)) %>% 
-    mutate(rolling_avg_sales = rollmeanr(prev_sales, window, fill = 0, align = "right")) %>% 
-    ungroup() %>% 
-    mutate(rolling_avg_sales = ifelse(is.na(rolling_avg_sales), 0, rolling_avg_sales)) %>%
-    select(-prev_sales, -first_sales_date)
-  
-  rolling_avg_col_name <- paste0(mean_col_name, "_", window)
-  df_with_rolling_mean <- df_with_rolling_mean %>% rename(!!rolling_avg_col_name := rolling_avg_sales)
-  
-  return(as.data.table(df_with_rolling_mean))
-}
 
 
 calc_rolling_mean_sales_item_store <- function(df, window, mean_col_name="rolling_avg_sales") {
   # Create a data frame with all combinations of date, item_nbr, and store_nbr
   date_range <- seq(min(df$date), max(df$date), by = "day")
-  item_store_comb <- df %>% 
-    select(item_nbr, store_nbr) %>% 
-    distinct() %>% 
-    expand(date = date_range, item_nbr, store_nbr) %>% 
+  item_store_comb <- df %>%
+    select(item_nbr, store_nbr) %>%
+    distinct() %>%
+    expand(date = date_range, item_nbr, store_nbr) %>%
     arrange(item_nbr, store_nbr, date)
- 
+
   # Join the data frames to fill in missing values and calculate rolling mean
-  df_with_rolling_mean <- item_store_comb %>% 
-    left_join(df, by = c("date", "item_nbr", "store_nbr")) %>% 
-    arrange(item_nbr, store_nbr, date) %>% 
+  df_with_rolling_mean <- item_store_comb %>%
+    left_join(df, by = c("date", "item_nbr", "store_nbr")) %>%
+    arrange(item_nbr, store_nbr, date) %>%
     mutate(prev_sales = lag(unit_sales, default = 0)) %>%
     group_by(item_nbr, store_nbr) %>%
-    mutate(prev_sales = ifelse(is.na(prev_sales), 0, prev_sales)) %>% 
-    mutate(rolling_avg_sales = rollmeanr(prev_sales, window, fill = 0, align = "right")) %>% 
-    ungroup() %>% 
+    mutate(prev_sales = ifelse(is.na(prev_sales), 0, prev_sales)) %>%
+    mutate(rolling_avg_sales = rollmeanr(prev_sales, window, fill = 0, align = "right")) %>%
+    ungroup() %>%
     mutate(rolling_avg_sales = ifelse(is.na(rolling_avg_sales), 0, rolling_avg_sales)) %>%
     select(-prev_sales)
   
+  # Find the first date with non-zero sales for each item-store combination
+  first_sales_date <- df_with_rolling_mean %>%
+    group_by(item_nbr, store_nbr) %>%
+    summarize(first_sales_date = min(date[which(unit_sales != 0)])) %>%
+    ungroup() %>%
+    filter(!is.infinite(first_sales_date))
+  
+  # only return rows from first sale onwards
+  df_with_rolling_mean <- df_with_rolling_mean %>%
+    left_join(first_sales_date, by = c("item_nbr", "store_nbr")) %>%
+    filter(!is.infinite(first_sales_date)) %>%
+    filter(date >= first_sales_date)
+  
+  df_with_rolling_mean <- df_with_rolling_mean %>% select(-first_sales_date)
   rolling_avg_col_name <- paste0(mean_col_name, "_", window)
   df_with_rolling_mean <- df_with_rolling_mean %>% rename(!!rolling_avg_col_name := rolling_avg_sales)
 
   return(as.data.table(df_with_rolling_mean))
-  
+
 }
 
 calc_rolling_mean_sales_class_store <- function(df, window, mean_col_name="rolling_avg_class_store_sales") {
@@ -360,6 +367,20 @@ calc_rolling_sum_promo_item_store <- function(df, window, mean_col_name="rolling
     mutate(rolling_sum_promo = ifelse(is.na(rolling_sum_promo), 0, rolling_sum_promo)) %>%
     select(-prev_promo)
   
+  # Find the first date with non-zero sales for each item-store combination
+  first_sales_date <- df_with_rolling_mean %>%
+    group_by(item_nbr, store_nbr) %>%
+    summarize(first_sales_date = min(date[which(unit_sales != 0)])) %>%
+    ungroup() %>%
+    filter(!is.infinite(first_sales_date))
+  
+  # only return rows from first sale onwards
+  df_with_rolling_mean <- df_with_rolling_mean %>%
+    left_join(first_sales_date, by = c("item_nbr", "store_nbr")) %>%
+    filter(!is.infinite(first_sales_date)) %>%
+    filter(date >= first_sales_date)
+  
+  df_with_rolling_mean <- df_with_rolling_mean %>% select(-first_sales_date)
   rolling_avg_col_name <- paste0(mean_col_name, "_", window)
   df_with_rolling_mean <- df_with_rolling_mean %>% rename(!!rolling_avg_col_name := rolling_sum_promo)
   
@@ -401,3 +422,98 @@ create_promotion_factor <- function(dt){
   
   return(dt)
 }
+
+
+add_ever_been_onpromotion <- function(dt){
+  
+  # sort by store_nbr, item_nbr, and date
+  dt <- dt %>%
+    arrange(store_nbr, item_nbr, date)
+  
+  # create a new column indicating whether onpromotion has ever been 1 before the current row's date
+  dt <- dt %>%
+    group_by(store_nbr, item_nbr) %>%
+    mutate(onpromotion_before = cummax(lag(onpromotion, default = 0))) %>%
+    as.data.table()
+  
+  # print the results
+  return(dt)
+  
+}
+
+#NOT WORKING
+add_days_since_last_onpromotion <- function(dt) {
+  
+  # sort by store_nbr, item_nbr, and date
+  dt <- dt %>%
+    arrange(store_nbr, item_nbr, date)
+  
+  # create a new column indicating the date when `onpromotion` was last 1 for the given `store_nbr` and `item_nbr`
+  dt <- dt %>%
+    group_by(store_nbr, item_nbr) %>%
+    mutate(last_onpromotion_date = lag(ifelse(onpromotion == 1, date, NA), default = first(date))) %>%
+    ungroup()
+  
+  # create a new column indicating the number of days since the last onpromotion
+  dt <- dt %>%
+    mutate(days_since_last_onpromotion = as.numeric(date - last_onpromotion_date))
+  
+  # set all NAs to a large number (e.g. 99999)
+  dt[is.na(days_since_last_onpromotion), days_since_last_onpromotion := 99999]
+  
+  # print the results
+  return(dt)
+  
+}
+
+add_mean_store_onpromotion_pct_diff <- function(df) {
+  # compute the mean percentage difference for each store_nbr when onpromotion is 0 or 1
+  df_mean <- df %>%
+    group_by(store_nbr, onpromotion) %>%
+    summarize(mean_store_onpromotion_pct_diff = mean((unit_sales - mean(unit_sales))/mean(unit_sales), na.rm = TRUE))
+  
+  # join the mean_pct_diff column to the original data frame
+  df <- left_join(df, df_mean, by = c("store_nbr", "onpromotion"))
+  
+  # return the modified data frame
+  return(df)
+}
+
+add_is_perishable_promotion <- function(dt){
+  
+  dt$is_perishable_promotion <- dt$onpromotion * dt$perishable
+  return(dt)
+  
+  
+}
+
+
+library(zoo)
+
+add_rolling_store_performance <- function(dt, n) {
+  
+  # sort by date and store_nbr
+  dt <- dt[order(date, store_nbr)]
+  
+  # calculate the rolling sum of unit_sales for each store_nbr
+  dt[, rolling_sum := rollapply(unit_sales, n, sum, align = "right", partial = TRUE), by = store_nbr]
+  
+  # calculate the percentage change in unit_sales for each store_nbr over the last n days
+  dt[, rolling_pct_change := (rolling_sum / lag(rolling_sum, n)) - 1, by = store_nbr]
+  
+  # return the results
+  return(dt)
+  
+}
+
+add_rolling_store_performance <- function(dt, n) {
+  dt %>%
+    group_by(store_nbr, date_shifted = date - n) %>%
+    summarize(rolling_sales = sum(unit_sales), .groups = 'drop') %>%
+    mutate(rolling_pct_change = (rolling_sales/lag(rolling_sales, default = first(rolling_sales))) - n) %>%
+    as.data.table()
+}
+
+
+
+

@@ -37,29 +37,34 @@ print(paste0("Processed Train. ", min(train$date), " to ", max(train$date)))
 # log1p the unit_sales to deal with the distribution of the target;
 # lots of low values close to 0, but then a few very large positive (and some negative) values
 train$unit_sales <- log1p(ifelse(train$unit_sales>0,train$unit_sales,0))
+# we have by default added rolling_avg_sales_1 in the data wrangling process. log1p that as well
+train$rolling_avg_sales_1  <- log1p(ifelse(train$rolling_avg_sales_1 >0,train$rolling_avg_sales_1 ,0))
 
-
+# add weights based on perisible
 train$weights <- ifelse(train$perishable == 1, 1.25, 1)
 
 train <- add_day_of_week(train)
+train <- add_day_of_month(train)
+train <- add_is_soon_after_public_payday(train)
+train <- add_is_soon_after_payday(train)
 train <- add_days_from_start_of_month_first14(train)
 train <- add_days_from_15th(train)
+train <- add_is_start_of_month(train)
+train <- add_is_perishable_promotion(train)
 
-
-# rolling 3 is there by default
+# rolling 1 is there by default
 #train <- calc_rolling_mean_sales_item_store(train, 1)
 train <- calc_rolling_mean_sales_item_store(train, 3)
 train <- calc_rolling_mean_sales_item_store(train, 7)
 train <- calc_rolling_mean_sales_item_store(train, 14)
 
-train <- calc_rolling_mean_sales_class_store(train, 7)
-train <- train[!is.na(train$id),]
-
+# train <- calc_rolling_mean_sales_class_store(train, 7)
+# train <- train[!is.na(train$id),]
 
 train <- calc_rolling_sum_promo_item_store(train, 7)
 
-
-
+# exclude rolling data "warming up" phase
+train <- train[train$date > (min(train$date) + lubridate::days(14)),]
 
 
 # do we need to get fancy with imputation?
@@ -72,22 +77,27 @@ test_ids <- te$id
 test <- process_data(te)
 print(paste0("Processed Test. ", min(test$date), " to ", max(test$date)))
 test <- add_day_of_week(test)
+test <- add_day_of_month(test)
 test <- add_days_from_start_of_month_first14(test)
 test <- add_days_from_15th(test)
+test <- add_is_soon_after_public_payday(test)
+test <- add_is_soon_after_payday(test)
+test <- add_is_start_of_month(test)
+test <- add_is_perishable_promotion(test)
+
 test <- apply_train_features_forward(train, test)
 
-
-# imputation strategies????
-
-
-# they might be 0, we probably want to then override that with the simple average
-
 pred_features <- c("rolling_avg_sales_1", "rolling_avg_sales_3", "rolling_avg_sales_7", "rolling_avg_sales_14", "rolling_sum_promo_7",
-                   "onpromotion", "is_dayoff", "days_from_start_of_month", "class", "days_from_15th", "rolling_avg_class_store_sales_7")
+                   "onpromotion", "is_dayoff", "day_of_week", "day_of_month", "is_soon_after_public_payday", "is_soon_after_payday", 
+                   "is_start_of_month", "is_perishable_promotion", "cluster")
+
+categorical_features <- c("day_of_week", "cluster")
+
+#"is_start_of_month", "class", "is_thursday", "is_soon_after_public_payday"
 
 
 # do cv, get best hyper params
-cv_results <- do_cv(train, num_windows = 3, window_length = 15, pred_features = pred_features)
+cv_results <- do_cv(train, num_windows = 3, window_length = 15, pred_features = pred_features, categorical_features = categorical_features)
 feature_importance <- cv_results$cv_feature_importances
 write.csv(feature_importance, "analysis/cv_feature_importance.csv", row.names=F)
 cv_error_metrics <- cv_results$cv_error_metrics
@@ -109,13 +119,13 @@ best_hp_combo <- mean_over_cv_splits[mean_over_cv_splits$mean_te_nrmse == min(me
 best_hyper <- cv_error_metrics[cv_error_metrics$hp_combo == best_hp_combo,][1,]
 
 # leave the last 15 days for our validation set for this final train
-train_lgb <- create_lgb_dataset(train, pred_features, categorical_feature = c("class"))
+train_lgb <- create_lgb_dataset(train, pred_features, categorical_features = categorical_features)
 
 val_dt <- train[train$date >= (max(train$date) - lubridate::days(15)) & train$id != "NA",]
 
 val_dt <- apply_train_features_forward(train[train$date < (max(train$date) - lubridate::days(15)),], val_dt)
 
-valid_lgb <- create_lgb_dataset(val_dt, pred_features, categorical_feature = c("class"))
+valid_lgb <- create_lgb_dataset(val_dt, pred_features, categorical_feature = categorical_features)
 
 light_gbn_tuned <- lgb.train(
   params = list(
@@ -145,7 +155,9 @@ val_error_metrics <- get_error_metrics(expm1(val_preds$unit_sales), expm1(val_pr
 val_error_metrics
 
 
-test_preds <- data.table(id=test_ids, unit_sales=predict(light_gbn_tuned, as.matrix(test[, ..pred_features])))
+test_preds <-
+  data.table(id = test_ids,
+             unit_sales = predict(light_gbn_tuned, as.matrix(test[, ..pred_features])))
 # undo the log1p
 test_preds$unit_sales <- expm1(test_preds$unit_sales)
 test_preds[unit_sales < 0, unit_sales := 0]

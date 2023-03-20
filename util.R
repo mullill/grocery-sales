@@ -24,11 +24,11 @@ get_error_metrics <- function(actual, predicted, weights){
   
 }
 
-create_lgb_dataset <- function(dt, pred_features = c("onpromotion"), categorical_feature = c("onpromotion")){
+create_lgb_dataset <- function(dt, pred_features = c("onpromotion"), categorical_features = c("onpromotion")){
 
   dt_ds <- lgb.Dataset(as.matrix(dt[, pred_features, with = FALSE]),
                        label = dt$unit_sales, 
-                       categorical_feature = categorical_feature,
+                       categorical_feature = categorical_features,
                        weight = dt$weights)
   
   return(dt_ds)
@@ -48,9 +48,8 @@ apply_train_features_forward <- function(tr_cv, te_cv){
   print("Add Rolling Mean Sales: 14")
   te_cv <- add_last_rolling_means(tr_cv, te_cv, window = 14)
   
-  print("Add Rolling Mean Class/Store Sales: 7")
-  te_cv <- add_last_rolling_class_store_means(tr_cv, te_cv, window = 7)
-  
+  #print("Add Rolling Mean Class/Store Sales: 7")
+  #te_cv <- add_last_rolling_class_store_means(tr_cv, te_cv, window = 7)
   
   print("Add Rolling Sum Promos: 7")
   te_cv <- add_last_rolling_sums(tr_cv, te_cv, 7)
@@ -65,19 +64,16 @@ apply_train_features_forward <- function(tr_cv, te_cv){
 # we loop over our hyper param grid in each split, performing inner cv on the tr_cv, and then
 # fitting the final model for te_cv
 # we capture all relevant metrics for that final train/test
-do_cv <- function(train, num_windows = 3, window_length = 15, pred_features = c("rolling_avg_sales_3", "onpromotion")){
-                                                                                #"rolling_avg_sales_7", 
-                                                                                #"rolling_avg_sales_14", 
-                                                                                #"rolling_sum_promo_7",
-                                                                                #"onpromotion")){
+do_cv <- function(train, num_windows = 3, window_length = 15, pred_features = c("rolling_avg_sales_3", "onpromotion"), 
+                  categorical_features = c()){
   
   #grid search
   #create hyperparameter grid
-  num_leaves = c(40, 50)
-  max_depth = c(20)
-  num_iterations = c(40, 50)
+  num_leaves = c(30, 50)
+  max_depth = c(10, 50)
+  num_iterations = c(25, 50)
   early_stopping_rounds = 10#round(num_iterations * .1,0)
-  learning_rate = c(0.2, 0.5)
+  learning_rate = c(0.01, 0.1, 0.5)
   hyper_grid <- expand.grid(max_depth = max_depth,
                             num_leaves = num_leaves,
                             num_iterations = num_iterations,
@@ -107,8 +103,8 @@ do_cv <- function(train, num_windows = 3, window_length = 15, pred_features = c(
     # given our training set, create the test set features
     te_cv <- apply_train_features_forward(tr_cv, te_cv)
     
-    train_lgb <- create_lgb_dataset(tr_cv, pred_features)
-    test_lgb <- create_lgb_dataset(te_cv, pred_features)
+    train_lgb <- create_lgb_dataset(tr_cv, pred_features, categorical_features)
+    test_lgb <- create_lgb_dataset(te_cv, pred_features, categorical_features)
    
     for(j in 1:nrow(hyper_grid)) {
       print(paste0("Hyper Param Combo: ", j))
@@ -161,7 +157,8 @@ do_cv <- function(train, num_windows = 3, window_length = 15, pred_features = c(
 }
 
 
-
+# only get predictions for rows which were not "filler" rows where we 
+# added 0s for store/items that didn't have a row
 get_predictions <- function(dt, model){
   
   preds <- predict(model, as.matrix(dt[dt$id != "NA", ..pred_features]))

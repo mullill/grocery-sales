@@ -16,7 +16,8 @@ add_stores_and_holidays_features <- function(train){
   
   train <- left_join(train, stores)
   
-  train$is_dayoff <- as.integer(lubridate::wday(train$date, week_start = 1) %in% c(6,7))
+  #train$is_holiday <- as.integer(lubridate::wday(train$date, week_start = 1) %in% c(6,7))
+  train$is_holiday <- 0
   
   for (i in 1:nrow(holidays)) {
     d <- holidays$date[i]
@@ -26,14 +27,14 @@ add_stores_and_holidays_features <- function(train){
     
     if (t != 'Work Day') {
       if (l == 'National') {
-        train$is_dayoff[train$date == d] <- 1
+        train$is_holiday[train$date == d] <- 1
       } else if (l == 'Regional') {
-        train$is_dayoff[train$date == d & train$state == n] <- 1
+        train$is_holiday[train$date == d & train$state == n] <- 1
       } else {
-        train$is_dayoff[train$date == d & train$city == n] <- 1
+        train$is_holiday[train$date == d & train$city == n] <- 1
       }
     } else {
-      train$is_dayoff[train$date == d] <- 0
+      train$is_holiday[train$date == d] <- 0
     }
   }
   
@@ -68,28 +69,21 @@ process_data <- function(dt){
 train <- fread("data/train.csv", na.strings="",
                col.names=c("id","date","store_nbr","item_nbr","unit_sales","onpromotion"))
 
-train <- train[train$date > "2017-03-01",]
+train <- train[train$date >= "2017-03-01",]
 train <- process_data(train)
 
 # this step will "sparsify" the data, filling in blanks where there were no sales for a given store/item
 train <- calc_rolling_mean_sales_item_store(train, 1)
 
 nrow(train[is.na(train$id),]) / nrow(train)
-cor(train$rolling_avg_sales_1, train$unit_sales)
 
 train[is.na(unit_sales), unit_sales:= 0]
 train[is.na(onpromotion), onpromotion:= 0]
-
-cor(train$rolling_avg_sales_1, train$unit_sales)
-
 
 train <- add_stores_and_holidays_features(train)
 train <- add_item_features(train)
 
 write.csv(train, "data/train_2017_Mar.csv", row.names=F)
-
-
-
 
 # Get a random 10% of observations
 train_sample <- train[sample(.N, .2 * .N), ]
