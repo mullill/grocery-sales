@@ -1,5 +1,5 @@
 #NWRMSLE = \sqrt{ \frac{\sum_{i=1}^n w_i \left( \ln(\hat{y}i + 1) - \ln(y_i +1)  \right)^2  }{\sum{i=1}^n w_i}} $$
-nrmse <- function(y, pred, weights = rep(1, length(y))) {
+nwrmsle <- function(y, pred, weights = rep(1, length(y))) {
   y <- pmax(0, pmin(y, max(y, na.rm = TRUE)))
   pred <- pmax(0, pmin(pred, max(pred, na.rm = TRUE)))
   score <- sum(weights * ((log(pred + 1) - log(y + 1)) ^ 2), na.rm = TRUE) / sum(weights, na.rm = TRUE)
@@ -12,19 +12,21 @@ get_error_metrics <- function(actual, predicted, weights){
   mean_pred <- mean(predicted)
   
   rmse = Metrics::rmse(actual, predicted)
-  nrmse = nrmse(actual, predicted, weights)
+  
+  nwrmsle = nwrmsle(actual, predicted, weights)
+  nwrmsle_uw = nwrmsle(actual, predicted)
+  
   mae = Metrics::mae(actual, predicted)
-  #smape = Metrics::smape(actual, predicted)
-  #mape = Metrics::mape(actual, predicted)
+
   
   # quantiles <- c(0.05, 0.10, 0.50, 0.90, 0.95)
   # ql <- quantileLoss(actual, predicted, quantiles)
   
-  return(data.frame(rmse, nrmse, mae))
+  return(data.frame(rmse, nwrmsle, nwrmsle_uw, mae))
   
 }
 
-create_lgb_dataset <- function(dt, pred_features = c("onpromotion"), categorical_features = c("onpromotion")){
+create_lgb_dataset <- function(dt, pred_features = c("onpromotion"), categorical_features = c("day_of_week")){
 
   dt_ds <- lgb.Dataset(as.matrix(dt[, pred_features, with = FALSE]),
                        label = dt$unit_sales, 
@@ -64,21 +66,28 @@ apply_train_features_forward <- function(tr_cv, te_cv){
 # we loop over our hyper param grid in each split, performing inner cv on the tr_cv, and then
 # fitting the final model for te_cv
 # we capture all relevant metrics for that final train/test
-do_cv <- function(train, num_windows = 3, window_length = 15, pred_features = c("rolling_avg_sales_3", "onpromotion"), 
+do_cv <- function(train, num_windows = 3, window_length = 15, 
+                  pred_features = c("rolling_avg_sales_3", "onpromotion"), 
                   categorical_features = c()){
   
   #grid search
   #create hyperparameter grid
-  num_leaves = c(30, 50)
-  max_depth = c(10, 50)
-  num_iterations = c(25, 50)
-  early_stopping_rounds = 10#round(num_iterations * .1,0)
-  learning_rate = c(0.01, 0.1, 0.5)
-  hyper_grid <- expand.grid(max_depth = max_depth,
+  num_leaves =c(50, 70)
+  min_data_in_leaf = c(200, 2000)
+  max_depth = c(50, 75)
+  num_iterations = c(200)
+  early_stopping_rounds = 10
+  learning_rate = c(0.025, 0.05)
+  hyper_grid <- expand.grid(
+                              #min_data_in_leaf = min_data_in_leaf,
+                            max_depth = max_depth,
                             num_leaves = num_leaves,
                             num_iterations = num_iterations,
                             early_stopping_rounds=early_stopping_rounds,
                             learning_rate = learning_rate)
+  
+  print("Run over HyperParam Search Grid:")
+  print(hyper_grid)
   
   cv_error_metrics <- NULL
   cv_feature_importances <- NULL
@@ -103,7 +112,9 @@ do_cv <- function(train, num_windows = 3, window_length = 15, pred_features = c(
     # given our training set, create the test set features
     te_cv <- apply_train_features_forward(tr_cv, te_cv)
     
+    print("create train lgb dataset")
     train_lgb <- create_lgb_dataset(tr_cv, pred_features, categorical_features)
+    print("create val lgb dataset")
     test_lgb <- create_lgb_dataset(te_cv, pred_features, categorical_features)
    
     for(j in 1:nrow(hyper_grid)) {
@@ -114,12 +125,15 @@ do_cv <- function(train, num_windows = 3, window_length = 15, pred_features = c(
         params = list(
           objective = "regression", 
           metric = "rmse",
-          max_depth = hyper_grid$max_depth[j],
           num_leaves = hyper_grid$num_leaves[j],
           num_iterations = hyper_grid$num_iterations[j],
           learning_rate = hyper_grid$learning_rate[j], 
+          #min_data_in_leaf = hyper_grid$min_data_in_leaf[j],
+          max_depth = hyper_grid$max_depth[j], 
           verbose = 1,
-          weight_column = "weights"
+          weight_column = "weights",
+          
+          num_threads = 4
         ), 
         early_stopping_rounds = hyper_grid$early_stopping_rounds[j],
         valids = list(test = test_lgb),

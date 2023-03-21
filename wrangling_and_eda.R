@@ -5,7 +5,7 @@ library(ggplot2)
 source("util.R")
 source("feature_engineering.R")
 
-add_stores_and_holidays_features <- function(train){
+add_stores_and_holidays_features <- function(dt){
 
   holidays <- fread("data/holidays_events.csv",  na.strings="",
                     col.names=c("date", "type", "locale", "locale_name", "description", "transferred"))
@@ -14,10 +14,10 @@ add_stores_and_holidays_features <- function(train){
   
   stores <- fread("data/stores.csv",  na.strings="")
   
-  train <- left_join(train, stores)
+  dt <- left_join(dt, stores)
   
   #train$is_holiday <- as.integer(lubridate::wday(train$date, week_start = 1) %in% c(6,7))
-  train$is_holiday <- 0
+  dt$is_holiday <- 0
   
   for (i in 1:nrow(holidays)) {
     d <- holidays$date[i]
@@ -27,27 +27,43 @@ add_stores_and_holidays_features <- function(train){
     
     if (t != 'Work Day') {
       if (l == 'National') {
-        train$is_holiday[train$date == d] <- 1
+        dt$is_holiday[dt$date == d] <- 1
       } else if (l == 'Regional') {
-        train$is_holiday[train$date == d & train$state == n] <- 1
+        dt$is_holiday[dt$date == d & dt$state == n] <- 1
       } else {
-        train$is_holiday[train$date == d & train$city == n] <- 1
+        dt$is_holiday[dt$date == d & dt$city == n] <- 1
       }
     } else {
-      train$is_holiday[train$date == d] <- 0
+      dt$is_holiday[dt$date == d] <- 0
     }
   }
   
-  train <- train %>% select(-city, -state)
+  dt <- dt %>% select(-city, -state)
   
 }
 
-add_item_features <- function(train){
- 
+add_item_features <- function(dt){
   items <- fread("data/items.csv", na.strings="")
-  
-  train <- left_join(train, items)
+  dt <- left_join(dt, items)
+  return(dt)
+}
 
+add_transaction_features <- function(dt){
+  transactions <- fread("data/transactions.csv", na.strings="")
+  transactions <- transactions %>% mutate(date = ymd(date))
+  dt <- left_join(dt, transactions)
+  return(dt)
+}
+
+add_oil_features <- function(dt){
+  oil <- fread("data/oil.csv", na.strings="")
+  oil <- oil %>% mutate(date = ymd(date))
+  dt <- left_join(dt, oil)
+  
+  # where we don't have an oil value
+  dt$dcoilwtico <- na.locf(dt$dcoilwtico, na.rm = FALSE)
+  
+  return(dt)
 }
 
 process_data <- function(dt){
@@ -69,7 +85,7 @@ process_data <- function(dt){
 train <- fread("data/train.csv", na.strings="",
                col.names=c("id","date","store_nbr","item_nbr","unit_sales","onpromotion"))
 
-train <- train[train$date >= "2017-03-01",]
+train <- train[train$date >= "2017-02-01",]
 train <- process_data(train)
 
 # this step will "sparsify" the data, filling in blanks where there were no sales for a given store/item
@@ -82,11 +98,22 @@ train[is.na(onpromotion), onpromotion:= 0]
 
 train <- add_stores_and_holidays_features(train)
 train <- add_item_features(train)
+train <- add_transaction_features(train)
+train <- add_oil_features(train)
 
-write.csv(train, "data/train_2017_Mar.csv", row.names=F)
+write.csv(train, "data/train_20170201_onwards.csv", row.names=F)
 
-# Get a random 10% of observations
+
+
+
+#Get a random 20% of observations
 train_sample <- train[sample(.N, .2 * .N), ]
+train_sample <- process_data(train_sample)
+train_sample <- add_stores_and_holidays_features(train_sample)
+train_sample <- add_item_features(train_sample)
+train_sample <- add_transaction_features(train_sample)
+train_sample <- add_oil_features(train_sample)
+
 write.csv(train_sample, "data/train_sample.csv", row.names=F)
 rm(train_sample)
 gc()
@@ -97,37 +124,16 @@ gc()
 
 test <- fread("data/test.csv", na.strings="")
 
+test <- process_data(test)
+
 test <- add_stores_and_holidays_features(test)
 test <- add_item_features(test)
+test <- add_transaction_features(test)
+test <- add_oil_features(test)
 
 write.csv(test, "data/test_joined.csv", row.names=F)
 
 
-
-
-
-
-
-
-
-
-#### FULL TRAIN EDA ###############################################################################
-
-hist(train$unit_sales)
-hist(train[train$unit_sales > -100 & train$unit_sales < 500,]$unit_sales)
-
-hist(log1p(train$unit_sales))
-
-ggplot(train, aes(x = unit_sales)) +
-  geom_density() +
-  scale_x_continuous(limits = c(0, 5000))
-
-
-
-ggplot(train, aes(x = unit_sales)) +
-  geom_histogram(binwidth = 100) +
-  scale_x_continuous(limits = c(0, 5000))
-  scale_x_continuous(limits = c(0, 5000))
 
 
 

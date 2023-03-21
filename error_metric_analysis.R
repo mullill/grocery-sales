@@ -1,14 +1,7 @@
 library(ggplot2)
 library(Metrics)
 
-#"It avoids penalizing large differences in prediction when both the predicted and the true number are large
-#predicting 5 when the true value is 50 is penalized more than predicting 500 when the true value is 545."
-nrmse <- function(y, pred, weights = rep(1, length(y))) {
-  y <- pmax(0, pmin(y, max(y, na.rm = TRUE)))
-  pred <- pmax(0, pmin(pred, max(pred, na.rm = TRUE)))
-  score <- sum(weights * ((log(pred + 1) - log(y + 1)) ^ 2), na.rm = TRUE) / sum(weights, na.rm = TRUE)
-  return(sqrt(score))
-}
+source("util.R")
 
 calc_errors <- function(actual, predicted) {
   
@@ -18,7 +11,7 @@ calc_errors <- function(actual, predicted) {
   diff_perc = ifelse(actual < predicted, -((actual/predicted) - 1), (predicted/actual) - 1)
   
   
-  nrmse <- nrmse(actual, predicted)
+  nrmse <- nwrmsle(actual, predicted)
   rmse <- Metrics::rmse(actual, predicted)
   
   em_df <- data.frame(actual = actual,

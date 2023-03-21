@@ -517,3 +517,54 @@ add_rolling_store_performance <- function(dt, n) {
 
 
 
+add_days_on_promotion <- function(dt) {
+  
+  # Create a new column indicating the start of each period of onpromotion
+  dt <- dt %>% 
+    group_by(store_nbr, item_nbr) %>% 
+    mutate(
+      onpromotion_start = ifelse(onpromotion == 1 & lag(onpromotion, default = 0) == 0, 1, 0)
+    )
+  
+  # Calculate the cumulative sum of onpromotion within each group, starting from the onpromotion_start column
+  dt <- dt %>% 
+    group_by(store_nbr, item_nbr, cumsum(onpromotion_start)) %>% 
+    mutate(
+      days_on_promotion = cumsum(onpromotion),
+      onpromotion_start = ifelse(onpromotion_start == 1, 1, 0),
+      days_on_promotion = ifelse(onpromotion == 0, 0, days_on_promotion)
+    ) %>% 
+    ungroup() %>% 
+    select(-onpromotion_start) %>%
+    as.data.table()
+  
+  dt <- dt[, !"cumsum(onpromotion_start)", with=FALSE]
+  
+  return(dt)
+  
+}
+
+
+
+
+
+carry_over_days_on_promotion <- function(train_dt, test_dt) {
+  
+  test_dt <- add_days_on_promotion(test_dt)
+  
+  # Extract the last known information for each store and item combination from the "train" set
+  last_known_info <- train_dt %>% 
+    filter(date == max(train_dt$date)) %>% 
+    select(store_nbr, item_nbr, days_on_promotion) %>% 
+    rename(last_days_on_promotion = days_on_promotion)
+  
+  # Merge the last known information with the "test" set
+  merged_dt <- test_dt %>% 
+    left_join(last_known_info, by = c("store_nbr", "item_nbr")) %>%
+    mutate(last_days_on_promotion = ifelse(onpromotion == 0, 0, last_days_on_promotion))
+ 
+  
+}
+
+
+
